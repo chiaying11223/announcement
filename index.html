@@ -961,7 +961,7 @@
                             <div id="ns-dropzone"
                                 class="upload-zone flex-grow px-4 py-4 border-2 border-dashed border-amber-200 rounded-2xl flex items-center justify-center gap-3 cursor-pointer hover:border-amber-400 hover:bg-amber-50/30 transition-all">
                                 <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 text-amber-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/></svg>
-                                <p class="text-sm text-slate-600 font-medium">拖曳年獸活動 .doc / .docx 至此，或 <span class="text-amber-600 font-bold">點擊上傳</span></p>
+                                <p class="text-sm text-slate-600 font-medium">拖曳活動 .doc / .docx 至此，或 <span class="text-amber-600 font-bold">點擊上傳</span></p>
                                 <div id="ns-file-status" class="hidden px-3 py-0.5 bg-amber-100 rounded-full text-xs font-bold text-amber-700"></div>
                             </div>
                         </div>
@@ -977,12 +977,12 @@
                     <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
                         <div class="bg-white rounded-[28px] shadow-sm border border-slate-200 flex flex-col h-[520px]">
                             <div class="p-4 border-b border-slate-100 flex justify-between items-center bg-slate-50 rounded-t-[28px]">
-                                <h2 class="font-bold text-slate-700">年獸 - 文案編輯區</h2>
+                                <h2 id="ns-title" class="font-bold text-slate-700">特殊活動 - 文案編輯區</h2>
                                 <button onclick="document.getElementById('ns-input').value=''; renderNianshou()"
                                     class="text-slate-400 hover:text-red-500 text-sm transition font-bold">清空</button>
                             </div>
                             <div class="p-4 flex-grow overflow-hidden">
-                                <textarea id="ns-input" oninput="renderNianshou()"
+                                <textarea id="ns-input" oninput="onNianshouInputEdit()"
                                     class="w-full h-full p-4 text-sm border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-amber-400 resize-none font-mono"
                                     placeholder="貼上年獸活動原始內容（含活動時間 ~ 活動時間 等）..."></textarea>
                             </div>
@@ -2251,6 +2251,82 @@
             };
         }
 
+        // 儲存 .docx 上傳時 mammoth 的原始 HTML（保留結構：表格、段落、清單等）
+        let nianshouSourceHTML = '';
+
+        // 過濾特殊活動文字裡的亂碼行（保留標準公告文字、表格短詞、編號時段等）
+        function filterNianshouGarbled(content) {
+            if (!content) return content;
+            const COMMON_PUNCT = /[「」『』、，。！？：；()（）【】《》"·~＊*\/\-]/;
+            // 異常 Unicode 區段（CJK 擴充 A、Box Drawing、拉丁擴充等）= 亂碼指標
+            const GARBLED_UNICODE = /[㐀-䶿─-▟-ɏʰ-ͯ]/;
+            // 表格中常見的短詞（要保留，不被當亂碼）
+            const COMMON_SHORT = /^(第[一二三四五六七八九十]次|出現時間|永久|備註|完成|個人|目前|時段|時間|登場|名稱|機率|獎項|請寶|位置|主標|內文)$/;
+            const lines = content.split('\n');
+            const cleaned = lines.filter(line => {
+                const trimmed = line.trim();
+                if (!trimmed) return true;
+                if (trimmed.length >= 15) return true;                          // 長行直接保留
+                if (GARBLED_UNICODE.test(trimmed)) return false;                // 含罕用區字元 → 亂碼
+                if (COMMON_PUNCT.test(trimmed)) return true;                    // 含中文標點
+                if (/^[\d\/\-:.\s%～]+$/.test(trimmed)) return true;            // 純數字/日期/時間/時段
+                if (/^\d+(?:[:：]\d+)?\s*[～~\-－—]\s*\d+(?:[:：]\d+)?$/.test(trimmed)) return true; // 06:00～06:30
+                if (/^[♫※●◆▲]/.test(trimmed)) return true;                   // 符號開頭
+                if (COMMON_SHORT.test(trimmed)) return true;                    // 表格短詞
+                // CJK + 字母／數字／非中文符號 混雜（短行）→ 亂碼（如「戺$推獸」「昀H濞讠」）
+                if (/[一-鿿]/.test(trimmed) && /[a-zA-Z0-9$@#%^&*<>{}|=+~`\\\[\]]/.test(trimmed) && trimmed.length < 15) return false;
+                if (/^[一-鿿]+$/.test(trimmed) && trimmed.length < 6) return false;     // 短的純 CJK → 亂碼（內文用不到）
+                return true;
+            });
+            return cleaned.join('\n').replace(/\n{3,}/g, '\n\n');
+        }
+
+        // 從上傳檔案抓「主標」「內文」兩個區段
+        // 主標 → 用作 textarea 標題（如「12/19 (四) 聖誕雪人魚缸搗蛋」）
+        // 內文 → 真正放進編輯區 / HTML / 預覽 的內容
+        function sliceNianshouSections(text, html) {
+            let title = '';
+            let body = text || '';
+            let bodyHTML = html || '';
+
+            // 純文字切段
+            if (text) {
+                // 主標：取「主標」後第一段非空白文字到下個 label（內文）之前
+                const tm = text.match(/主標\s*([\s\S]*?)\s*內文/);
+                if (tm) {
+                    title = tm[1].replace(/\s+/g, ' ').trim();
+                }
+                // 內文：「內文」之後到結尾全部當 body
+                const bm = text.match(/內文([\s\S]+)$/);
+                if (bm) body = bm[1].trim();
+                // 從「敬上」那行截斷 — 之後 .doc 結尾的格式 byte 殘渣全部丟掉
+                const signoffMatch = body.match(/[^\n]*敬上[^\n]*/);
+                if (signoffMatch) {
+                    const endIdx = body.indexOf(signoffMatch[0]) + signoffMatch[0].length;
+                    body = body.substring(0, endIdx).trim();
+                }
+            }
+
+            // HTML 切段（.docx 路徑）：找含「內文」的 <p>，取後面所有兄弟節點 HTML
+            if (html) {
+                const tmp = document.createElement('div');
+                tmp.innerHTML = html;
+                const els = [...tmp.children];
+                const bodyStartIdx = els.findIndex(el => /^\s*內文\s*$/.test(el.textContent || ''));
+                if (bodyStartIdx >= 0) {
+                    bodyHTML = els.slice(bodyStartIdx + 1).map(el => el.outerHTML).join('\n');
+                    // 主標也順便從 HTML 抓（更精準）
+                    const titleStartIdx = els.findIndex(el => /^\s*主標\s*$/.test(el.textContent || ''));
+                    if (titleStartIdx >= 0 && titleStartIdx < bodyStartIdx) {
+                        const titleEls = els.slice(titleStartIdx + 1, bodyStartIdx);
+                        title = titleEls.map(el => (el.textContent || '').trim()).filter(t => t).join(' ');
+                    }
+                }
+            }
+
+            return { title, body, bodyHTML };
+        }
+
         function handleNianshouFile(file) {
             const ext = file.name.split('.').pop().toLowerCase();
             const status = document.getElementById('ns-file-status');
@@ -2258,20 +2334,27 @@
                 status.textContent = '讀取中：' + file.name;
                 status.classList.remove('hidden');
             }
-            const setText = (text) => {
-                // 用 raw 文字產 HTML、再 derive 出乾淨文字 → 填 textarea
-                // textarea 顯示的就是 HTML 模板組合後的中文，不會混進原檔的 metadata 或亂碼
-                const imgUrl = (document.getElementById('ns-image-url')?.value || '').trim();
-                let displayText = '';
-                try {
-                    const html = generateWe5NianshouHTML(text || '', imgUrl);
-                    displayText = we5DeriveTextFromHTML(html) || '';
-                } catch (err) {
-                    console.warn('[Nianshou] derive 失敗，保留 raw:', err);
-                    displayText = text || '';
+            const setText = (text, html) => {
+                // 驗證：特殊活動檔案必須含有「主標」與「內文」標籤
+                const rawCheck = (text || '') + ' ' + (html || '');
+                if (!/主標/.test(rawCheck) || !/內文/.test(rawCheck)) {
+                    if (status) {
+                        status.textContent = '✗ 不是特殊活動格式（缺「主標」或「內文」）';
+                        status.classList.remove('hidden');
+                        status.classList.remove('bg-amber-100', 'text-amber-700');
+                        status.classList.add('bg-red-100', 'text-red-700');
+                    }
+                    return;
                 }
-                if (!displayText || displayText.length < 5) displayText = text || '';
-                document.getElementById('ns-input').value = displayText;
+                // 切出「主標」與「內文」兩段：主標 → tab 標題；內文 → editor / HTML / preview
+                const { title, body, bodyHTML } = sliceNianshouSections(text || '', html || '');
+                nianshouSourceHTML = bodyHTML || '';
+                // 過濾 .doc 二進位讀取造成的亂碼行
+                const cleanBody = filterNianshouGarbled(body || '');
+                document.getElementById('ns-input').value = cleanBody;
+                // 更新 tab 標題為主標內容
+                const titleEl = document.getElementById('ns-title');
+                if (titleEl) titleEl.textContent = (title ? title : '特殊活動') + ' - 文案編輯區';
                 renderNianshou();
                 if (status) {
                     status.textContent = '✓ 已讀取';
@@ -2282,7 +2365,7 @@
                 const reader = new FileReader();
                 reader.onload = (e) => {
                     const extracted = extractTextFromDocBinary(e.target.result);
-                    setText(extracted || '');
+                    setText(extracted || '', '');
                 };
                 reader.readAsArrayBuffer(file);
             } else if (ext === 'docx') {
@@ -2290,15 +2373,17 @@
                 reader.onload = (e) => {
                     mammoth.convertToHtml({ arrayBuffer: e.target.result })
                         .then(result => {
+                            const html = result.value || '';
                             const tmp = document.createElement('div');
-                            tmp.innerHTML = result.value;
-                            setText(tmp.innerText || tmp.textContent || '');
+                            tmp.innerHTML = html;
+                            const text = tmp.innerText || tmp.textContent || '';
+                            setText(text, html);   // .docx：保留 HTML
                         });
                 };
                 reader.readAsArrayBuffer(file);
             } else if (ext === 'txt') {
                 const reader = new FileReader();
-                reader.onload = (e) => setText(e.target.result || '');
+                reader.onload = (e) => setText(e.target.result || '', '');
                 reader.readAsText(file);
             }
         }
@@ -2309,14 +2394,21 @@
             const codeEl = document.getElementById('ns-code');
             const previewEl = document.getElementById('ns-preview');
             if (!codeEl || !previewEl) return;
-            if (!text) {
+            if (!text && !nianshouSourceHTML) {
                 codeEl.innerText = '';
                 previewEl.innerHTML = '<p class="text-slate-400 italic">尚未輸入內容...</p>';
                 return;
             }
-            const html = generateWe5NianshouHTML(text, imgUrl);
+            // 有 sourceHTML（.docx 上傳）優先使用結構化 HTML，否則用 textarea 純文字
+            const html = generateWe5NianshouHTML(text, imgUrl, nianshouSourceHTML);
             codeEl.innerText = html;
             previewEl.innerHTML = html;
+        }
+
+        // textarea 被修改後，原始 mammoth HTML 已過時 → 清掉，避免使用者編輯沒生效
+        function onNianshouInputEdit() {
+            nianshouSourceHTML = '';
+            renderNianshou();
         }
 
         function copyNianshouHTML() {
@@ -4024,71 +4116,81 @@
                 `<p>\n\t本週經典唯舞還有許多活動唷，請寶寶們不要錯過喲!</p>`;
         }
 
-        // ---- 年獸（魚缸限時 BOSS）：固定模板，僅日期 / 圖片 URL 變動 ----
-        function generateWe5NianshouHTML(content, imageUrlOverride) {
-            const text = content || '';
-            console.log('[Nianshou] 輸入文字長度:', text.length, '前 200 字:', text.substring(0, 200));
-
-            // 寬鬆的日期單元：YYYY/M/D (週) HH:MM — 支援半形/全形括號、半/全形冒號、空格選用
-            const DATE_RE = /\d{4}[\/\-．]\d{1,2}[\/\-．]\d{1,2}\s*[\(（][一二三四五六日][\)）]\s*\d{1,2}[:：]\d{2}/g;
-            const SEP_RE = /\s*[~～\-－—]+\s*/;
-            let timeRange = '';
-            // 第一輪：用「日期 + 分隔 + 日期」完整範圍 regex
-            const fullRangeRE = new RegExp(DATE_RE.source + SEP_RE.source + DATE_RE.source);
-            const fullMatch = text.match(fullRangeRE);
-            if (fullMatch) {
-                timeRange = fullMatch[0].replace(SEP_RE, ' ~ ');
-            } else {
-                // 第二輪備援：抓所有獨立日期片段，第一個當開始、最後一個當結束
-                const allDates = text.match(DATE_RE) || [];
-                console.log('[Nianshou] 第二輪 — 找到的所有日期:', allDates);
-                if (allDates.length >= 2) {
-                    timeRange = `${allDates[0]} ~ ${allDates[allDates.length - 1]}`;
-                } else if (allDates.length === 1) {
-                    timeRange = allDates[0];
-                }
-            }
-            // 將找到的字串正規化成標準半形格式
-            if (timeRange) {
-                timeRange = timeRange
-                    .replace(/[（]/g, '(').replace(/[）]/g, ')')
-                    .replace(/[：]/g, ':');
-            }
-            console.log('[Nianshou] 抽到時間範圍:', timeRange || '(無)');
-            if (!timeRange) timeRange = '【活動時間】';
-
-            // 短日期範圍 MM/DD~MM/DD
-            let shortRange = '【日期範圍】';
-            const sm = timeRange.match(/(\d{4})\/(\d{1,2})\/(\d{1,2}).*?(\d{4})\/(\d{1,2})\/(\d{1,2})/);
-            if (sm) {
-                const pad = n => String(n).padStart(2, '0');
-                shortRange = `${pad(sm[2])}/${pad(sm[3])}~${pad(sm[5])}/${pad(sm[6])}`;
-            }
-
-            // 結束日期 + 固定 12:00（spec 寫死）
-            let endDateLine = '【結束日期】 12:00';
-            const em = timeRange.match(/[~～\-]+\s*(\d{4}\/\d{1,2}\/\d{1,2}\s*\([一二三四五六日]\))/);
-            if (em) {
-                endDateLine = `${em[1]} 12:00`;
-            } else {
-                // 備援：從原始文字找「等到 YYYY/MM/DD (週) HH:MM」格式
-                const em2 = text.match(/(?:等到|結束後)\s*(\d{4}\/\d{1,2}\/\d{1,2}\s*\([一二三四五六日]\)\s*\d{1,2}:\d{2})/);
-                if (em2) endDateLine = em2[1];
-            }
-
-            // 圖片 URL：優先使用呼叫端傳入的（特殊活動 UI 直接給）
+        // ---- 特殊活動：固定 spec 結構，文字內容跟著檔案 ----
+        // Spec 規則（來自魚缸.txt）：
+        //   - 「BOSS名」用紅色 span（檔案有什麼用什麼）
+        //   - 日期範圍用藍色 span
+        //   - 7 個時段表格（黃底、藍頭，含短日期欄）
+        //   - 圖片插在表格後
+        //   - 段落 / P.S / 結尾敬語照檔案文字
+        function generateWe5NianshouHTML(content, imageUrlOverride, sourceHTML) {
             const imgUrl = (imageUrlOverride || '').trim();
+            const text = (content || '').trim();
+            if (!text) return '<p>請上傳檔案或貼上內容</p>';
 
-            return `<p>\n\t親愛的唯舞寶寶們　安安：</p>\n` +
-                `<p>\n\t【唯舞獨尊Online】「<span style="color:#ff0000;">年獸</span>」出沒啦～<br />\n\t將於<span style="color:#0000ff;"> ${timeRange} </span>在遊戲中的魚缸限時登場！</p>\n` +
-                `<p>\n\t大家要注意唷！<br />\n\t這隻調皮的「<span style="color:#ff0000;">年獸</span>」出現時間和一般怪物不同～<br />\n\t必須在下表所列的 7 個指定時段內登入魚缸，年獸才會現身唷！</p>\n` +
-                `<table border="1" bordercolor="#666" cellpadding="4" style="text-align: center; vertical-align:middle; background-color: #ffc; border-collapse: collapse">\n\t<tbody>\n` +
-                `\t\t<tr style="background-color: #6cf; font-weight: bold">\n\t\t\t<td>\n\t\t\t\t${shortRange}</td>\n\t\t\t<td>\n\t\t\t\t第一次</td>\n\t\t\t<td>\n\t\t\t\t第二次</td>\n\t\t\t<td>\n\t\t\t\t第三次</td>\n\t\t\t<td>\n\t\t\t\t第四次</td>\n\t\t\t<td>\n\t\t\t\t第五次</td>\n\t\t\t<td>\n\t\t\t\t第六次</td>\n\t\t\t<td>\n\t\t\t\t第七次</td>\n\t\t</tr>\n` +
-                `\t\t<tr>\n\t\t\t<td>\n\t\t\t\t出現時間</td>\n\t\t\t<td>\n\t\t\t\t06:00～06:30</td>\n\t\t\t<td>\n\t\t\t\t09:00～09:30</td>\n\t\t\t<td>\n\t\t\t\t12:00～12:30</td>\n\t\t\t<td>\n\t\t\t\t15:00～15:30</td>\n\t\t\t<td>\n\t\t\t\t18:00～18:30</td>\n\t\t\t<td>\n\t\t\t\t21:00～21:30</td>\n\t\t\t<td>\n\t\t\t\t00:00～00:30</td>\n\t\t</tr>\n` +
-                `\t</tbody>\n</table>\n` +
-                `<p>\n\t<br />\n\t<img alt="中秋怪在魚缸" src="${imgUrl}" style="width: 500px; height: 375px;" /></p>\n` +
-                `<p>\n\tP.S原本在魚缸裡出沒的怪物，因為太害怕年獸，活動期間全都嚇得躲回老家過年啦！<br />\n\t等到${endDateLine}假期完畢後，牠就會乖乖回到魚缸繼續上班囉～</p>\n` +
-                `<p>\n\t《唯舞獨尊》營運團隊敬上</p>`;
+            // 依 spec 套色：紅色「」、藍色日期範圍
+            const stylize = (t) => {
+                if (!t) return t;
+                t = t.replace(/「([^」]+)」/g, '「<span style="color:#ff0000;">$1</span>」');
+                // YYYY/MM/DD（週）HH:MM ~ ... 範圍 → 藍色
+                t = t.replace(/(\d{4}\/\d{1,2}\/\d{1,2}(?:\s*\([一二三四五六日]\))?(?:\s*\d{1,2}[:：]\d{2})?\s*[~～]\s*\d{4}\/\d{1,2}\/\d{1,2}(?:\s*\([一二三四五六日]\))?(?:\s*\d{1,2}[:：]\d{2})?)/g,
+                    '<span style="color:#0000ff;">$1</span>');
+                // MM/DD（週）HH:MM ~ ... 範圍 → 藍色
+                t = t.replace(/(?<!\d\/)(\d{1,2}\/\d{1,2}(?:\s*\([一二三四五六日]\))?(?:\s*\d{1,2}[:：]\d{2})?\s*[~～]\s*\d{1,2}\/\d{1,2}(?:\s*\([一二三四五六日]\))?(?:\s*\d{1,2}[:：]\d{2})?)/g,
+                    '<span style="color:#0000ff;">$1</span>');
+                return t;
+            };
+
+            const lines = text.split('\n').map(l => l.trim()).filter(l => l);
+
+            // 找 7 個時段（HH:MM~HH:MM 格式）
+            const allText = lines.join(' ');
+            const timeSlots = (allText.match(/\d{1,2}[:：]\d{2}\s*[～~\-]\s*\d{1,2}[:：]\d{2}/g) || []).slice(0, 7);
+
+            // 找短日期範圍（MM/DD~MM/DD 或 MM/DD-MM/DD）
+            const shortRangeMatch = allText.match(/\d{1,2}\/\d{1,2}\s*[\-~～]\s*\d{1,2}\/\d{1,2}/);
+            const shortRange = shortRangeMatch ? shortRangeMatch[0] : '';
+
+            // 切「表格前」「表格後」兩段
+            const beforeTable = [];
+            const afterTable = [];
+            let foundTable = false;
+            for (const line of lines) {
+                const isTableHeaderRow = /第[一二三四五六七]次/.test(line);
+                const isTableDataRow = /出現時間/.test(line);
+                const isTimeSlotOnly = /^\d{1,2}[:：]\d{2}\s*[～~\-]\s*\d{1,2}[:：]\d{2}\s*$/.test(line);
+                const isShortRangeOnly = /^\d{1,2}\/\d{1,2}\s*[\-~～]\s*\d{1,2}\/\d{1,2}\s*$/.test(line);
+                if (isTableHeaderRow || isTableDataRow || isTimeSlotOnly || isShortRangeOnly) {
+                    foundTable = true;
+                    continue;
+                }
+                if (!foundTable) beforeTable.push(line);
+                else afterTable.push(line);
+            }
+
+            // 渲染時段表
+            const renderTable = () => {
+                if (timeSlots.length < 7) return '';
+                const labels = ['第一次', '第二次', '第三次', '第四次', '第五次', '第六次', '第七次'];
+                let h = `<table border="1" bordercolor="#666" cellpadding="4" style="text-align: center; vertical-align:middle; background-color: #ffc; border-collapse: collapse">\n\t<tbody>\n`;
+                h += `\t\t<tr style="background-color: #6cf; font-weight: bold">\n\t\t\t<td>\n\t\t\t\t${shortRange || ''}</td>\n`;
+                labels.forEach(l => { h += `\t\t\t<td>\n\t\t\t\t${l}</td>\n`; });
+                h += `\t\t</tr>\n\t\t<tr>\n\t\t\t<td>\n\t\t\t\t出現時間</td>\n`;
+                timeSlots.forEach(s => { h += `\t\t\t<td>\n\t\t\t\t${s.replace(/[：]/g, ':')}</td>\n`; });
+                h += `\t\t</tr>\n\t</tbody>\n</table>\n`;
+                return h;
+            };
+
+            // 組裝
+            let html = '';
+            beforeTable.forEach(line => { html += `<p>\n\t${stylize(line)}</p>\n`; });
+            const tableHTML = renderTable();
+            if (tableHTML) html += tableHTML;
+            if (imgUrl) {
+                html += `<p>\n\t<br />\n\t<img alt="" src="${imgUrl}" style="width: 500px; height: auto;" /></p>\n`;
+            }
+            afterTable.forEach(line => { html += `<p>\n\t${stylize(line)}</p>\n`; });
+            return html;
         }
 
         function generateWe5GenericHTML(text) {
