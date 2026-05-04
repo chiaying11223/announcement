@@ -3214,7 +3214,7 @@
                 // 避免 .doc 結構把「人物」「特效」放在不同 run/cell 而被切開、join 時夾入空白導致只匹配到「特效：」。
                 // U+200B-200F: 零寬空白/連接器/標記; U+202A-202E: 方向控制; U+2060: 詞連結; U+FEFF: BOM
                 clean = clean
-                    .replace(/[​-‏‪-‮⁠﻿]/g, '')
+                    .replace(/[\u200B-\u200F\u202A-\u202E\u2060\uFEFF]/g, '')
                     .replace(/\s+/g, '');
                 console.log('[We5] 直儲獎項壓縮後:', JSON.stringify(clean));
                 // 用「關鍵字前綴 + 冒號」作為每個獎項的起點，以各匹配位置切分整串（來源可能完全無空白）
