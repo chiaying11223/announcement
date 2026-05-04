@@ -3198,17 +3198,29 @@
         function we5ExtractAwardNames(category, prizeText) {
             if (!prizeText) return [];
             // 移除機率詳情等後綴雜訊；遇到 ♫/♪/♬（下一段標題符號）也切掉，避免最後一個獎項吃進下段標題
-            const clean = prizeText
+            let clean = prizeText
                 .replace(/(?:※)?\s*(?:獎勵機率詳情|機率詳情).*$/g, '')
                 .replace(/[♫♪♬][\s\S]*$/, '')
                 .trim();
             if (!clean) return [];
+            // 把 .doc 擷取產生的「人物 特效」「人物 手持」等空白接回，避免關鍵字前綴只抓到後綴
+            if (typeof we5GlueAwardPrefixes === 'function') {
+                clean = we5GlueAwardPrefixes(clean);
+            }
 
             if (category === 'zhichu') {
                 console.log('[We5] 直儲獎項原始輸入:', JSON.stringify(clean));
+                // 直儲獎項名稱本身不會有有意義的空白，把所有空白＋零寬/方向控制字元先壓掉，
+                // 避免 .doc 結構把「人物」「特效」放在不同 run/cell 而被切開、join 時夾入空白導致只匹配到「特效：」。
+                // U+200B-200F: 零寬空白/連接器/標記; U+202A-202E: 方向控制; U+2060: 詞連結; U+FEFF: BOM
+                clean = clean
+                    .replace(/[​-‏‪-‮⁠﻿]/g, '')
+                    .replace(/\s+/g, '');
+                console.log('[We5] 直儲獎項壓縮後:', JSON.stringify(clean));
                 // 用「關鍵字前綴 + 冒號」作為每個獎項的起點，以各匹配位置切分整串（來源可能完全無空白）
-                // 長關鍵字優先避免「人物特效」被「特效」搶先匹配
-                const KEYWORDS_RE = /(?:人物背飾|人物特效|人物頭頂|人物裝扮|個人背景|個人資訊|男表情|女表情|傢俱|舞步卡|特效|頭頂|手持|背部|戒指|耳環)[：:]/g;
+                // 長關鍵字優先避免「人物特效」被「特效」搶先匹配；
+                // 注意：人物手持 / 人物背部 必須列出，否則會被後面的「手持」「背部」搶走匹配，導致「人物」前綴被吞
+                const KEYWORDS_RE = /(?:人物背飾|人物特效|人物頭頂|人物裝扮|人物手持|人物背部|個人背景|個人資訊|男表情|女表情|傢俱|舞步卡|特效|頭頂|手持|背部|戒指|耳環)[：:]/g;
                 const matches = [...clean.matchAll(KEYWORDS_RE)];
                 console.log('[We5] 直儲獎項 keyword matches:', matches.map(m => ({ text: m[0], idx: m.index })));
                 if (matches.length === 0) {
@@ -3379,14 +3391,18 @@
         }
 
         // ---- 備註事項固定模板（結束日期從活動時間抓出來代入） ----
-        function we5ZhichuNotesTemplate(endDate) {
+        // marks: 由 we5ExtractZhichuMarks 偵測到的標記字陣列（如 ['唯','舞','獨','尊'] 或 ['星','光','傳','說']）
+        //        若未提供則 fallback 為「唯/舞/獨/尊」
+        function we5ZhichuNotesTemplate(endDate, marks) {
             const d = endDate || '【結束日期】';
+            const ms = (marks && marks.length > 0) ? marks : ['唯', '舞', '獨', '尊'];
+            const markStr = ms.map(c => '「' + c + '」').join('、');
             return `<p>\n\t<br />\n\t<span style="color: rgb(128, 0, 128);">♫&nbsp;備註事項</span></p>\n` +
                 `<p>\n\t1、<span style="color:#0000ff;">達成直儲活動條件後，</span><span style="color:#ff0000;">直接購買及回饋之M幣將直接配發至所購買M幣的伺服器中</span><span style="color:#0000ff;">，每組帳號不限制領取次數。</span></p>\n` +
                 `<p>\n\t2、<span style="color:#0000ff;">達成直儲活動條件後，</span><span style="color:#ff0000;">活動虛寶獎項將配發至直儲伺服器的角色收禮明細中</span><span style="color:#0000ff;">，每組帳號不限制領取次數。</span></p>\n` +
-                `<p>\n\t3、本活動「唯」、「舞」、「獨」、「尊」領出後道具時效為7天，逾期將由系統回收。</p>\n` +
+                `<p>\n\t3、本活動${markStr}領出後道具時效為7天，逾期將由系統回收。</p>\n` +
                 `<p>\n\t4、活動NPC「<span style="color:#0000ff;">唯舞小姊姊</span>」將於<span style="color:#ff0000;">${d}</span>關閉，請玩家於期限內完成領獎及兌換動作。</p>\n` +
-                `<p>\n\t5、提醒您！所有未領出的「唯」、「舞」、「獨」、「尊」，將於<span style="color:#ff0000;">${d}</span>由系統刪除。</p>\n` +
+                `<p>\n\t5、提醒您！所有未領出的${markStr}，將於<span style="color:#ff0000;">${d}</span>由系統刪除。</p>\n` +
                 `<p>\n\t<span style="color:#000000;">6、</span><span style="color:#ff0000;">本活動兌換道具請於7日內領出，逾期將由系統回收。</span></p>\n` +
                 `<p>\n\t7、活動時間以伺服器時間為準。</p>\n` +
                 `<p>\n\t8、鈊象電子保留更動活動及贈品之權利。</p>\n` +
@@ -3501,6 +3517,39 @@
                 `<p>\n\t5、關於活動相關問題可至｢<a class="ContainLink" href="\n[HOME_PAGE=Gt]/Games/We5/Services/BugReport/index.aspx?CID=WE5" target="_blank">遊戲問題回報專區</a>｣進行詢問。</p>`;
         }
 
+        // ---- 從直儲文字內容偵測實際使用的標記字（如「唯舞獨尊」或「星光傳說」等）----
+        // 規則：掃描所有「X(N天)＊任選1項」中的單字 X，去重並保留出現順序
+        function we5ExtractZhichuMarks(text) {
+            if (!text) return null;
+            const compact = text.replace(/\s+/g, ' ');
+            const RE = /([一-鿿])\s*\(\s*\d+\s*天\s*\)\s*＊?\s*任選1項/g;
+            const seen = new Set();
+            const marks = [];
+            let m;
+            while ((m = RE.exec(compact)) !== null) {
+                const ch = m[1];
+                if (!seen.has(ch)) { seen.add(ch); marks.push(ch); }
+            }
+            return marks.length > 0 ? marks : null;
+        }
+
+        // 把 tier 表格中的 item2 文字（如「光(7天)＊任選1項」）格式化為含 <br /> 的版本
+        function we5FormatTierItemBR(s) {
+            if (!s) return s;
+            return s.replace(/\(\s*(\d+)\s*天\s*\)\s*＊?\s*任選1項/, '($1天)<br />\n\t\t\t\t＊任選1項');
+        }
+
+        // .doc 二進位擷取時可能在「人物/個人/男/女」與其後綴之間插入控制字元，導致被切段後又用空白接回（如「人物 特效：...」）。
+        // 這個工具把已知的常見組合接回成連續詞。
+        function we5GlueAwardPrefixes(s) {
+            if (!s) return s;
+            return s
+                .replace(/人物\s+(背飾|特效|頭頂|裝扮|手持|背部)/g, '人物$1')
+                .replace(/個人\s+(背景|資訊)/g, '個人$1')
+                .replace(/男\s+表情/g, '男表情')
+                .replace(/女\s+表情/g, '女表情');
+        }
+
         // ---- 從純文字重建直儲「儲值區間」表格（.doc 檔案沒有 docxTables 時的退路） ----
         function we5BuildTierTableFromText(text) {
             if (!text) return null;
@@ -3509,7 +3558,9 @@
             const startIdx = startMatch.index + startMatch[0].length;
             const tail = text.substring(startIdx);
             const endMatch = tail.match(/※\s*NPC|NPC可兌換|活動獎項|備註事項/);
-            const segment = (endMatch ? tail.substring(0, endMatch.index) : tail).replace(/\s+/g, ' ').trim();
+            const segment = we5GlueAwardPrefixes(
+                (endMatch ? tail.substring(0, endMatch.index) : tail).replace(/\s+/g, ' ').trim()
+            );
 
             // 以 range 為錨點：100~199 / 3000(含)以上
             const TIER_RE = /(\d+\s*~\s*\d+|\d+\s*\(含\)\s*以上)/g;
@@ -3545,7 +3596,7 @@
                 html += `\t\t\t<td>\n\t\t\t\t${t.item1}</td>\n`;
                 html += '\t\t\t<td nowrap="nowrap">\n\t\t\t\t永久</td>\n';
                 html += '\t\t</tr>\n\t\t<tr>\n';
-                html += `\t\t\t<td>\n\t\t\t\t${t.item2}</td>\n`;
+                html += `\t\t\t<td>\n\t\t\t\t${we5FormatTierItemBR(t.item2)}</td>\n`;
                 html += `\t\t\t<td nowrap="nowrap">\n\t\t\t\t${t.timing2}</td>\n`;
                 html += '\t\t</tr>\n';
             });
@@ -3561,7 +3612,9 @@
             const startIdx = startMatch.index + startMatch[0].length;
             const tail = text.substring(startIdx);
             const endMatch = tail.match(/活動獎項|備註事項/);
-            const segment = (endMatch ? tail.substring(0, endMatch.index) : tail).replace(/\s+/g, ' ').trim();
+            const segment = we5GlueAwardPrefixes(
+                (endMatch ? tail.substring(0, endMatch.index) : tail).replace(/\s+/g, ' ').trim()
+            );
 
             // 以「任意中文字 (N天) ＊任選1項」為分段（支援 唯/舞/獨/尊、星/光/傳 等任何標記）
             const SEC_RE = /([一-鿿])\s*\(\s*(\d+)\s*天\s*\)\s*＊?\s*任選1項/g;
@@ -3777,8 +3830,9 @@
             const awardNames = we5ExtractAwardNames('zhichu', (data.prizeLines || []).join(' '));
             html += we5RenderAwardTable('zhichu', awardNames);
 
-            // 備註事項（固定模板 + 結束日期）
-            html += we5ZhichuNotesTemplate(endDate);
+            // 備註事項（固定模板 + 結束日期 + 動態標記字）
+            const marks = we5ExtractZhichuMarks(content);
+            html += we5ZhichuNotesTemplate(endDate, marks);
 
             return html;
         }
